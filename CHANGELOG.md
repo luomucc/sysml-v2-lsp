@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.12.0]
+
+### Added
+
+- Parse performance benchmark script (`scripts/benchmark-parse.ts`) for cold vs DFA-pre-seeded comparisons
+- Async workspace scanning with post-scan revalidation of open documents
+
+### Changed
+
+- Workspace file scanning now only runs for `.code-workspace` projects, avoiding wasteful scans in single-file mode
+- Completion provider caches definition completions per document version
+- Hover provider shares the server-level semantic validator to reuse cached indexes
+- Semantic validator caches symbol indexes across validation runs
+- Parse worker improved DFA snapshot retry and re-parse logic
+- Diagnostics line numbers clamped to prevent negative values from error listener
+- Workspace scan skips `temp`, `test`, `dist`, `build`, and similar non-project directories
+
 ## [0.11.0]
 
 ### Added
