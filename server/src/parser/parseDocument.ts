@@ -53,14 +53,13 @@ export function parseDocument(text: string): ParseResult {
         return parseDocumentLL(text);
     }
 
-    // First successful parse with pre-seeded DFA: clear ALL states
-    // so that subsequent parses don't encounter stale pre-seeded
-    // states for grammar paths not exercised by this file.  This is
-    // a one-time cost — the next parse rebuilds the DFA correctly
-    // from the ATN.
+    // First successful parse with pre-seeded DFA: the pre-seeded
+    // states are working correctly (SLL fast path succeeded).  Just
+    // clear the flag so we don't re-enter the error retry branch on
+    // future parses.  The pre-seeded edges remain in the DFA and
+    // keep subsequent parses fast.
     if (isDfaPreSeeded()) {
         markDfaNotPreSeeded();
-        clearAllDFAStates();
     }
 
     return result;

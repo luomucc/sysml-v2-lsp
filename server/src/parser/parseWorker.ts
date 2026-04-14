@@ -22,6 +22,7 @@ import {
 import { parentPort, receiveMessageOnPort } from 'node:worker_threads';
 import { SysMLv2Lexer } from '../generated/SysMLv2Lexer.js';
 import { SysMLv2Parser } from '../generated/SysMLv2Parser.js';
+import { clearAllDFAStates, isDfaPreSeeded, loadDFASnapshot, markDfaNotPreSeeded } from './dfaLoader.js';
 import { SysMLErrorListener } from './errorListener.js';
 import { WARMUP_TEXT } from './warmupText.js';
 
@@ -634,9 +635,9 @@ function handleParseRequest(msg: ParseRequest): void {
 
     // --- Lex ---
     const lexStart = Date.now();
-    const inputStream = CharStream.fromString(text);
-    const lexer = new SysMLv2Lexer(inputStream);
-    const tokenStream = new CommonTokenStream(lexer);
+    let inputStream = CharStream.fromString(text);
+    let lexer = new SysMLv2Lexer(inputStream);
+    let tokenStream = new CommonTokenStream(lexer);
     tokenStream.fill();
     const lexMs = Date.now() - lexStart;
 
@@ -677,6 +678,49 @@ function handleParseRequest(msg: ParseRequest): void {
             message: e.message,
             length: e.length,
         }));
+    }
+
+    // --- DFA snapshot retry ---
+    // If the pre-seeded DFA caused bogus errors, clear all DFA states
+    // and re-parse with a clean DFA (LL-only).  This mirrors the retry
+    // logic in parseDocument.ts on the main thread.
+    if (errors.length > 0 && isDfaPreSeeded()) {
+        markDfaNotPreSeeded();
+        clearAllDFAStates();
+
+        // Re-lex and re-parse from scratch with clean DFA
+        inputStream = CharStream.fromString(text);
+        lexer = new SysMLv2Lexer(inputStream);
+        tokenStream = new CommonTokenStream(lexer);
+        tokenStream.fill();
+
+        const retryParser = new SysMLv2Parser(tokenStream);
+        lexer.removeErrorListeners();
+        retryParser.removeErrorListeners();
+        retryParser.interpreter.predictionMode = PredictionMode.LL;
+        retryParser.errorHandler = new DefaultErrorStrategy();
+
+        const retryListener = new SysMLErrorListener();
+        retryParser.addErrorListener(retryListener);
+
+        try {
+            retryParser.rootNamespace();
+        } catch {
+            // best effort
+        }
+
+        errors = retryListener.getErrors().map(e => ({
+            line: e.line,
+            column: e.column,
+            message: e.message,
+            length: e.length,
+        }));
+        mode = 'LL';
+    }
+
+    // Clear the pre-seeded flag after first successful parse
+    if (isDfaPreSeeded()) {
+        markDfaNotPreSeeded();
     }
 
     // --- Improve error locations ---
@@ -729,12 +773,28 @@ function handleParseRequest(msg: ParseRequest): void {
 
 // ---- Cooperative warm-up with message interleaving ----
 //
-// We use setImmediate to kick off warm-up AFTER the event handler is
-// registered.  Inside the warm-up loop we call receiveMessageOnPort()
-// between chunk parses so that any real parse requests are serviced
-// immediately rather than waiting for the full warm-up to complete.
+// First, try to load the DFA snapshot — this gives near-instant DFA
+// coverage (~20 ms) and eliminates the need for warm-up parsing.
+// If the snapshot fails, fall back to the original interruptible
+// warm-up that parses chunks of SysML text to build the DFA.
 
 setImmediate(() => {
+    // Attempt DFA snapshot load first — skips warm-up entirely if successful
+    try {
+        const states = loadDFASnapshot();
+        parentPort?.postMessage({
+            warmup: true,
+            elapsed: 0,
+            interrupted: false,
+            chunksCompleted: 0,
+            totalChunks: 0,
+            message: `DFA snapshot loaded in worker: ${states} states`,
+        });
+        return; // No warm-up needed
+    } catch {
+        // Snapshot unavailable — fall back to warm-up parsing
+    }
+
     const chunks = createWarmupChunks();
     const t0 = Date.now();
     let interrupted = false;

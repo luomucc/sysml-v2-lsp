@@ -940,6 +940,7 @@ describe('Hover Provider', () => {
 
     it('should include semantic feedback for hovered diagnostic range', async () => {
         const { HoverProvider } = await import('../../server/src/providers/hoverProvider.js');
+        const { SemanticValidator } = await import('../../server/src/providers/semanticValidator.js');
         const { SymbolTable } = await import('../../server/src/symbols/symbolTable.js');
         const text = `package T { part def V { part e : Missing[1]; } }`;
         const { dm } = await setup(text);
@@ -951,6 +952,7 @@ describe('Hover Provider', () => {
         expect(usage).toBeDefined();
 
         const provider = new HoverProvider(dm);
+        provider.setSemanticValidator(new SemanticValidator(dm));
         const hover = provider.provideHover({
             textDocument: { uri },
             position: {
@@ -1345,7 +1347,7 @@ describe('Completion Provider', () => {
         const { CompletionProvider } = await import('../../server/src/providers/completionProvider.js');
         const text = `package P {
     part def Wheel;
-    part car : 
+    part car :
 }`;
         const { dm } = await setup(text);
 
@@ -1367,7 +1369,7 @@ describe('Completion Provider', () => {
     part def Car {
         port fuel : FuelPort;
         port backup : FuelPort;
-        connection c1 connect fuel to 
+        connection c1 connect fuel to
     }
 }`;
         const { dm } = await setup(text);

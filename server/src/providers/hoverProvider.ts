@@ -7,9 +7,9 @@ import {
 } from 'vscode-languageserver/node.js';
 import { DocumentManager } from '../documentManager.js';
 import { getLibraryHoverInfo } from '../library/libraryIndex.js';
-import { SemanticValidator } from './semanticValidator.js';
 import { toMetaclassName } from '../symbols/sysmlElements.js';
 import { extractQualifiedNameAt } from '../utils/identUtils.js';
+import type { SemanticValidator } from './semanticValidator.js';
 
 /**
  * Provides hover information for SysML elements.
@@ -17,7 +17,14 @@ import { extractQualifiedNameAt } from '../utils/identUtils.js';
  */
 export class HoverProvider {
 
+    private _semanticValidator: SemanticValidator | undefined;
+
     constructor(private documentManager: DocumentManager) { }
+
+    /** Inject the server-level SemanticValidator so hover reuses cached data. */
+    setSemanticValidator(validator: SemanticValidator): void {
+        this._semanticValidator = validator;
+    }
 
     provideHover(params: TextDocumentPositionParams): Hover | null {
         const symbolTable = this.documentManager.getSymbolTable(params.textDocument.uri);
@@ -92,12 +99,11 @@ export class HoverProvider {
         // Attach semantic diagnostics near the hovered symbol to provide
         // actionable guidance directly in hover.
         let semanticDiags = this.documentManager.getSemanticDiagnostics(params.textDocument.uri);
-        if (!semanticDiags) {
-            const semanticValidator = new SemanticValidator(this.documentManager);
-            semanticDiags = semanticValidator.validate(params.textDocument.uri);
+        if (!semanticDiags && this._semanticValidator) {
+            semanticDiags = this._semanticValidator.validate(params.textDocument.uri);
             this.documentManager.setSemanticDiagnostics(params.textDocument.uri, semanticDiags);
         }
-        const hoverDiags = semanticDiags.filter((d) =>
+        const hoverDiags = (semanticDiags ?? []).filter((d) =>
             this.rangeContainsPosition(d.range, params.position),
         );
 

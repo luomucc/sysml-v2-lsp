@@ -1,8 +1,8 @@
 import {
     CompletionItem,
     CompletionItemKind,
-    TextDocumentPositionParams,
     InsertTextFormat,
+    TextDocumentPositionParams,
 } from 'vscode-languageserver/node.js';
 import { DocumentManager } from '../documentManager.js';
 import { isDefinition, SysMLElementKind } from '../symbols/sysmlElements.js';
@@ -72,6 +72,12 @@ const SYSML_KEYWORDS: { label: string; kind: CompletionItemKind; detail: string;
  * TODO: integrate antlr4-c3 for grammar-aware contextual completions.
  */
 export class CompletionProvider {
+    /** Cached definition completions, invalidated when symbol count changes. */
+    private _defCache?: {
+        symbolCount: number;
+        items: CompletionItem[];
+    };
+
     constructor(private documentManager: DocumentManager) { }
 
     provideCompletions(params: TextDocumentPositionParams): CompletionItem[] {
@@ -100,21 +106,28 @@ export class CompletionProvider {
         // Add definition symbols from all cached documents to improve type completion.
         const workspaceTable = this.documentManager.getWorkspaceSymbolTable();
         const allSymbols = workspaceTable.getAllSymbols();
-        const definitionSymbols = allSymbols.filter((s) => isDefinition(s.kind));
 
-        const seen = new Set<string>();
-        for (const sym of definitionSymbols) {
-            if (!sym.name || seen.has(sym.name)) continue;
-            seen.add(sym.name);
-
-            items.push({
-                label: sym.name,
-                kind: this.mapSymbolKindToCompletionKind(sym.kind),
-                detail: `${sym.kind}${sym.qualifiedName !== sym.name ? ` (${sym.qualifiedName})` : ''}`,
-                documentation: sym.documentation,
-                data: sym.qualifiedName,
-                sortText: `1_${sym.name}`,
-            });
+        // Use cached definition items if symbol count hasn't changed
+        if (this._defCache && this._defCache.symbolCount === allSymbols.length) {
+            items.push(...this._defCache.items);
+        } else {
+            const definitionSymbols = allSymbols.filter((s) => isDefinition(s.kind));
+            const seen = new Set<string>();
+            const defItems: CompletionItem[] = [];
+            for (const sym of definitionSymbols) {
+                if (!sym.name || seen.has(sym.name)) continue;
+                seen.add(sym.name);
+                defItems.push({
+                    label: sym.name,
+                    kind: this.mapSymbolKindToCompletionKind(sym.kind),
+                    detail: `${sym.kind}${sym.qualifiedName !== sym.name ? ` (${sym.qualifiedName})` : ''}`,
+                    documentation: sym.documentation,
+                    data: sym.qualifiedName,
+                    sortText: `1_${sym.name}`,
+                });
+            }
+            this._defCache = { symbolCount: allSymbols.length, items: defItems };
+            items.push(...defItems);
         }
 
         // Add port endpoint symbols for connect contexts.

@@ -85,11 +85,17 @@ const codeActionProvider = new CodeActionProvider(documentManager);
 const formattingProvider = new FormattingProvider(documents);
 const semanticValidator = new SemanticValidator(documentManager);
 
+// Share the server-level semantic validator with hover so it reuses cached indexes.
+hoverProvider.setSemanticValidator(semanticValidator);
+
 let hasConfigurationCapability = false;
 let hasWorkspaceFolderCapability = false;
 
 /** Workspace folder roots (file-system paths) captured during initialization. */
 let workspaceRoots: string[] = [];
+
+/** True when the client opened a `.code-workspace` file (multi-file project). */
+let isWorkspaceFile = false;
 
 /** Set to true after onInitialized completes (DFA loaded, library indexed). */
 let serverReady = false;
@@ -156,13 +162,15 @@ function handleWorkerMessage(msg: any): void {
     if (!doc || doc.version !== version) return;
 
     // Convert worker errors → LSP Diagnostics
+    // Worker errors are already 0-based (errorListener converts ANTLR 1-based lines).
     const diagnostics: import('vscode-languageserver/node.js').Diagnostic[] = [];
     for (const e of errors) {
+        const line = Math.max(0, e.line);
         diagnostics.push({
             severity: 1, // Error
             range: {
-                start: { line: e.line - 1, character: e.column },
-                end: { line: e.line - 1, character: e.column + (e.length || 1) },
+                start: { line, character: e.column },
+                end: { line, character: e.column + (e.length || 1) },
             },
             message: e.message,
             source: 'sysml',
@@ -181,26 +189,28 @@ function handleWorkerMessage(msg: any): void {
     // Send worker diagnostics immediately (fast path)
     connection.sendDiagnostics({ uri, diagnostics });
 
-    // Now do the main-thread parse for the symbol table (needed by
-    // hover, completion, go-to-def, etc.).  The main-thread DFA is
-    // already warm from the snapshot so this is fast (~50-200 ms).
-    // We do this asynchronously via setImmediate to keep the event
-    // loop responsive between the fast diagnostic push and the
-    // heavier symbol-table build.
+    // Run the main-thread parse via setImmediate so the event loop
+    // processes diagnostic notifications first.  The main-thread parse
+    // is needed for the symbol table (hover, completion, go-to-def)
+    // and semantic tokens (colorisation).
     setImmediate(() => {
         const currentDoc = documents.get(uri);
         if (!currentDoc || currentDoc.version !== version) return;
 
         documentManager.parse(currentDoc);
 
-        // Merge syntax diagnostics from the authoritative main-thread
-        // parse with semantic diagnostics (deferred).
-        const mainDiags = diagnosticsProvider.getDiagnostics(uri);
+        // Re-derive diagnostics from DiagnosticsProvider which applies
+        // grammar-limitation suppression.  This replaces the raw worker
+        // diagnostics with properly filtered ones.
+        const correctedDiags = diagnosticsProvider.getDiagnostics(uri);
+
+        // Re-add keyword diagnostics from the main-thread parse
         const parseResult = documentManager.get(uri);
         if (parseResult) {
-            mainDiags.push(...validateKeywords(parseResult));
+            correctedDiags.push(...validateKeywords(parseResult));
         }
-        connection.sendDiagnostics({ uri, diagnostics: mainDiags });
+
+        connection.sendDiagnostics({ uri, diagnostics: correctedDiags });
 
         connection.sendNotification('sysml/status', {
             state: 'end',
@@ -218,9 +228,10 @@ function handleWorkerMessage(msg: any): void {
             if (!documents.get(uri)) return;
             const semanticDiags = semanticValidator.validate(uri);
             documentManager.setSemanticDiagnostics(uri, semanticDiags);
-            if (semanticDiags.length === 0) return;
-            mainDiags.push(...semanticDiags);
-            connection.sendDiagnostics({ uri, diagnostics: mainDiags });
+
+            // Merge corrected diagnostics with semantic diagnostics
+            const allDiags = [...correctedDiags, ...semanticDiags];
+            connection.sendDiagnostics({ uri, diagnostics: allDiags });
         }, 50));
     });
 }
@@ -255,6 +266,10 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
     hasWorkspaceFolderCapability = !!(
         capabilities.workspace && !!capabilities.workspace.workspaceFolders
     );
+
+    // Check if the client opened a .code-workspace file
+    const initOpts = params.initializationOptions as { isWorkspaceFile?: boolean } | undefined;
+    isWorkspaceFile = initOpts?.isWorkspaceFile ?? false;
 
     // Capture workspace folder roots for background file scanning.
     if (params.workspaceFolders) {
@@ -362,21 +377,22 @@ connection.onInitialized(() => {
 
     // Scan workspace folders for .sysml files and pre-parse them so
     // cross-file type references resolve even before files are opened.
-    if (workspaceRoots.length > 0) {
-        const scanT0 = Date.now();
-        let fileCount = 0;
-        for (const root of workspaceRoots) {
-            fileCount += scanWorkspaceFolder(root);
-        }
-        const scanMs = Date.now() - scanT0;
-        connection.console.log(
-            `Workspace scan: pre-parsed ${fileCount} .sysml files in ${scanMs} ms`
-        );
-    }
-
-    // Server is fully initialized — mark ready and spawn the parse worker.
+    // Only scan when a .code-workspace file is open — single-file mode
+    // does not need cross-file pre-parsing (it would wastefully scan
+    // all .sysml files under the folder root).
+    // Server is marked ready immediately; scan runs asynchronously.
     serverReady = true;
     spawnParseWorker();
+
+    if (isWorkspaceFile && workspaceRoots.length > 0) {
+        scanWorkspaceFoldersAsync(workspaceRoots).then(({ fileCount, scanMs }) => {
+            connection.console.log(
+                `Workspace scan: pre-parsed ${fileCount} .sysml files in ${scanMs} ms`
+            );
+            // Re-validate open documents now that cross-file symbols are available
+            revalidateOpenDocuments();
+        });
+    }
 
     // Re-validate any documents that were opened before the DFA was loaded.  The
     // early parse may have produced false-positive syntax errors
@@ -411,7 +427,15 @@ function findSysMLFiles(dir: string): string[] {
     }
     for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory() && entry.name !== 'node_modules' && entry.name !== '.git') {
+        if (entry.isDirectory()) {
+            // Skip directories that are unlikely to contain project files
+            const name = entry.name;
+            if (name === 'node_modules' || name === '.git' ||
+                name === 'temp' || name === 'test' || name === 'tests' ||
+                name === 'out' || name === 'dist' || name === 'build' ||
+                name === 'coverage' || name === '.venv' || name === '__pycache__') {
+                continue;
+            }
             // Skip nested repositories — they are independent projects
             // whose files should not be loaded into this workspace.
             try {
@@ -458,6 +482,30 @@ function scanWorkspaceFolder(root: string): number {
         if (parseWorkspaceFile(f)) count++;
     }
     return count;
+}
+
+/**
+ * Asynchronously scan workspace folders, yielding between files
+ * so the LSP event loop stays responsive during startup.
+ */
+async function scanWorkspaceFoldersAsync(
+    roots: string[],
+): Promise<{ fileCount: number; scanMs: number }> {
+    const scanT0 = Date.now();
+    let fileCount = 0;
+    const allFiles: string[] = [];
+    for (const root of roots) {
+        allFiles.push(...findSysMLFiles(root));
+    }
+    for (let i = 0; i < allFiles.length; i++) {
+        if (parseWorkspaceFile(allFiles[i])) fileCount++;
+        // Yield every 4 files so pending LSP requests (hover, completion)
+        // can be served without waiting for the full scan.
+        if ((i + 1) % 4 === 0) {
+            await new Promise<void>(resolve => setImmediate(resolve));
+        }
+    }
+    return { fileCount, scanMs: Date.now() - scanT0 };
 }
 
 /**
@@ -606,6 +654,12 @@ async function validateDocument(document: TextDocument): Promise<void> {
     // The worker posts diagnostics back via handleWorkerMessage,
     // which also kicks off the main-thread parse for the symbol table.
     if (requestWorkerParse(document)) {
+        // Still parse on the main thread so the semantic tokens provider
+        // and symbol table are available immediately when VS Code
+        // requests them.  The result is cached by version, so the
+        // setImmediate handler's parse() in handleWorkerMessage is a
+        // free cache hit.
+        documentManager.parse(document);
         return;
     }
 

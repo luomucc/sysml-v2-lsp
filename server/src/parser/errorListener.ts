@@ -35,8 +35,9 @@ export class SysMLErrorListener extends BaseErrorListener {
         const length = token?.text?.length ?? 1;
 
         this.errors.push({
-            // ANTLR lines are 1-based, convert to 0-based for LSP
-            line: line - 1,
+            // ANTLR lines are 1-based, convert to 0-based for LSP.
+            // Clamp to 0 to guard against edge cases (e.g. EOF at line 0).
+            line: Math.max(0, line - 1),
             column: charPositionInLine,
             message: msg,
             offendingSymbol: token,

@@ -4,21 +4,23 @@ import { SyntaxError } from '../parser/errorListener.js';
 import { stripComments } from '../utils/identUtils.js';
 
 /**
- * Patterns that indicate expression-level constructs the ANTLR grammar
- * cannot handle.  Only blocks whose body text matches at least one of
- * these patterns will have their syntax errors suppressed.
+ * Patterns that indicate constructs the ANTLR grammar cannot handle.
+ * Only blocks whose body text matches at least one of these patterns
+ * will have their syntax errors suppressed.
  *
  *  - Arithmetic / unit operators:  +  -  *  /  ^  **  used as infix
  *    operators in value expressions (e.g. `mass * 9.81`, `W/m^2`).
  *  - Collection / streaming operators:  ->  .?
  *  - Assignment operator inside expressions:  :=
+ *  - Doc comments after typed parameters:  `; doc /*`
+ *  - Prefix metadata annotations:  `#identifier`
  *
  * The patterns are intentionally conservative: a bare `+` adjacent to a
  * word character or digit on both sides is required, so that a `+` in a
  * comment or string doesn't trigger suppression.
  */
 const EXPRESSION_OPERATOR_RE =
-    /(\w\s*[+\-*/^]\s*\w)|(\w\s*\*\*\s*\w)|->|\.(?:\?)|:=/;
+    /(\w\s*[+\-*/^]\s*\w)|(\w\s*\*\*\s*\w)|->|\.(?:\?)|:=|;\s*doc\b|#\w+\s+dependency/;
 
 /**
  * Provides diagnostics (errors/warnings) for SysML documents.
