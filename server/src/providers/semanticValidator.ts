@@ -1,7 +1,7 @@
 import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node.js';
 import { DocumentManager } from '../documentManager.js';
-import { SysMLModelProvider } from '../model/sysmlModelProvider.js';
 import { getLibraryPackageNames, resolveLibraryType } from '../library/libraryIndex.js';
+import { SysMLModelProvider } from '../model/sysmlModelProvider.js';
 import { SysMLElementKind, SysMLSymbol, isDefinition } from '../symbols/sysmlElements.js';
 import { stripComments } from '../utils/identUtils.js';
 
@@ -90,6 +90,12 @@ export class SemanticValidator {
         verifiedNames: Set<string>;
     };
 
+    /** Cached symbol indexes, invalidated when workspace symbol table changes. */
+    private indexCache?: {
+        symbolCount: number;
+        indexes: SymbolIndexes;
+    };
+
     constructor(private readonly documentManager: DocumentManager) {
         this.modelProvider = new SysMLModelProvider(documentManager);
     }
@@ -141,7 +147,7 @@ export class SemanticValidator {
         const allSymbolNames = new Set(allSymbols.map(s => s.name));
         const libraryNames = new Set(getLibraryPackageNames());
         const text = this.documentManager.getText(uri) ?? '';
-        const indexes = this.buildSymbolIndexes(allSymbols);
+        const indexes = this.getOrBuildIndexes(allSymbols);
 
         const diagnostics: Diagnostic[] = [];
 
@@ -1128,6 +1134,19 @@ export class SemanticValidator {
             scope = indexes.byQualifiedName.get(scope.parentQualifiedName);
         }
         return undefined;
+    }
+
+    /**
+     * Return cached indexes if the workspace symbol table hasn't changed,
+     * otherwise rebuild and cache.
+     */
+    private getOrBuildIndexes(allSymbols: SysMLSymbol[]): SymbolIndexes {
+        if (this.indexCache && this.indexCache.symbolCount === allSymbols.length) {
+            return this.indexCache.indexes;
+        }
+        const indexes = this.buildSymbolIndexes(allSymbols);
+        this.indexCache = { symbolCount: allSymbols.length, indexes };
+        return indexes;
     }
 
     private buildSymbolIndexes(allSymbols: SysMLSymbol[]): SymbolIndexes {

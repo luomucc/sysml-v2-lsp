@@ -23,7 +23,7 @@ export class DocumentManager {
         const version = document.version;
         const cached = this.cache.get(uri);
 
-        if (cached && cached.version === version) {
+        if (cached && cached.version === version && !cached.needsParse) {
             return cached.result;
         }
 
@@ -34,15 +34,60 @@ export class DocumentManager {
             version,
             text,
             result,
+            needsParse: false,
         });
 
         return result;
     }
 
     /**
+     * Cache the document text and version without parsing.
+     * The actual ANTLR parse is deferred until a provider needs the
+     * symbol table (via `getSymbolTable` / `getWorkspaceSymbolTable`).
+     * This avoids the double-parse penalty when a parse worker has
+     * already produced diagnostics for this version.
+     */
+    cacheTextOnly(uri: string, version: number, text: string): void {
+        const cached = this.cache.get(uri);
+        // Don't overwrite a fully parsed entry for the same version
+        if (cached && cached.version === version && !cached.needsParse) {
+            return;
+        }
+        this.cache.set(uri, {
+            version,
+            text,
+            // Stub result — will be replaced by real parse when needed
+            result: {
+                tree: null,
+                tokenStream: null as any,
+                parser: null as any,
+                lexer: null as any,
+                errors: [],
+                timing: { lexMs: 0, parseMs: 0 },
+            },
+            needsParse: true,
+        });
+    }
+
+    /**
+     * Ensure the cached entry for a URI has been fully parsed.
+     * Called lazily by symbol table accessors.
+     */
+    private ensureParsed(uri: string): void {
+        const cached = this.cache.get(uri);
+        if (!cached || !cached.needsParse) return;
+        const result = parseDocument(cached.text);
+        cached.result = result;
+        cached.needsParse = false;
+        cached.symbolTable = undefined; // invalidate stale symbol table
+    }
+
+    /**
      * Get the cached parse result for a URI, or undefined if not cached.
+     * Triggers a lazy parse if the entry was created via cacheTextOnly.
      */
     get(uri: string): ParseResult | undefined {
+        this.ensureParsed(uri);
         return this.cache.get(uri)?.result;
     }
 
@@ -85,6 +130,7 @@ export class DocumentManager {
      * rebuilt when the document version changes.
      */
     getSymbolTable(uri: string): SymbolTable | undefined {
+        this.ensureParsed(uri);
         const cached = this.cache.get(uri);
         if (!cached) return undefined;
 
@@ -105,6 +151,10 @@ export class DocumentManager {
      */
     getWorkspaceSymbolTable(): SymbolTable {
         for (const [uri, cached] of this.cache) {
+            // Ensure lazy-cached entries are parsed before building workspace table
+            if (cached.needsParse) {
+                this.ensureParsed(uri);
+            }
             const builtVersion = this.wsBuiltVersions.get(uri);
             if (builtVersion === cached.version) continue;
             this.wsSymbolTable.build(uri, cached.result);
@@ -164,4 +214,6 @@ interface CachedDocument {
         version: number;
         diagnostics: Diagnostic[];
     };
+    /** When true, this entry was created via cacheTextOnly and needs parsing before symbol table access. */
+    needsParse?: boolean;
 }

@@ -18,6 +18,8 @@ export class SymbolTable {
     private symbols = new Map<string, SysMLSymbol>();
     /** All symbols indexed by URI for cross-file lookup */
     private symbolsByUri = new Map<string, SysMLSymbol[]>();
+    /** All symbols indexed by simple name for O(1) lookup */
+    private symbolsByName = new Map<string, SysMLSymbol[]>();
     /** The global scope */
     private globalScope: Scope;
 
@@ -51,13 +53,7 @@ export class SymbolTable {
      * Find a symbol by name (simple name, not qualified).
      */
     findByName(name: string): SysMLSymbol[] {
-        const results: SysMLSymbol[] = [];
-        for (const symbol of this.symbols.values()) {
-            if (symbol.name === name) {
-                results.push(symbol);
-            }
-        }
-        return results;
+        return this.symbolsByName.get(name) ?? [];
     }
 
     /**
@@ -116,8 +112,12 @@ export class SymbolTable {
      */
     findReferences(name: string): SysMLSymbol[] {
         const results: SysMLSymbol[] = [];
+        // Start with symbols that share the name (O(1) lookup)
+        const byName = this.symbolsByName.get(name);
+        if (byName) results.push(...byName);
+        // Also find symbols whose typeNames reference this name
         for (const symbol of this.symbols.values()) {
-            if (symbol.name === name || symbol.typeNames.includes(name)) {
+            if (symbol.typeNames.includes(name) && symbol.name !== name) {
                 results.push(symbol);
             }
         }
@@ -141,6 +141,13 @@ export class SymbolTable {
         if (existing) {
             for (const sym of existing) {
                 this.symbols.delete(sym.qualifiedName);
+                // Remove from name index
+                const nameList = this.symbolsByName.get(sym.name);
+                if (nameList) {
+                    const idx = nameList.indexOf(sym);
+                    if (idx >= 0) nameList.splice(idx, 1);
+                    if (nameList.length === 0) this.symbolsByName.delete(sym.name);
+                }
             }
         }
         this.symbolsByUri.set(uri, []);
@@ -191,6 +198,10 @@ export class SymbolTable {
         const uriSymbols = this.symbolsByUri.get(uri) ?? [];
         uriSymbols.push(symbol);
         this.symbolsByUri.set(uri, uriSymbols);
+        // Maintain name index
+        const nameList = this.symbolsByName.get(symbol.name) ?? [];
+        nameList.push(symbol);
+        this.symbolsByName.set(symbol.name, nameList);
         scope.define(symbol);
     }
 

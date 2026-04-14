@@ -291,6 +291,7 @@ const exampleFiles = [
     path.join(rootDir, 'examples/bike.sysml'),
     path.join(rootDir, 'examples/camera.sysml'),
     path.join(rootDir, 'examples/toaster-system.sysml'),
+    path.join(rootDir, 'examples/temp/dfa-coverage-advanced.sysml'),
 ];
 
 console.log('Generating DFA snapshot...');
