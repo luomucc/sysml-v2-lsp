@@ -92,9 +92,18 @@ export class SemanticValidator {
 
     /** Cached symbol indexes, invalidated when workspace symbol table changes. */
     private indexCache?: {
-        symbolCount: number;
+        symbols: SysMLSymbol[];
         indexes: SymbolIndexes;
     };
+
+    /** Cached allSymbolNames set, keyed on allSymbols array identity. */
+    private symbolNamesCache?: {
+        symbols: SysMLSymbol[];
+        names: Set<string>;
+    };
+
+    /** Cached library package names — never changes after init. */
+    private libraryNamesCache?: Set<string>;
 
     constructor(private readonly documentManager: DocumentManager) {
         this.modelProvider = new SysMLModelProvider(documentManager);
@@ -144,8 +153,23 @@ export class SemanticValidator {
         if (symbols.length === 0) return [];
 
         const allSymbols = symbolTable.getAllSymbols();
-        const allSymbolNames = new Set(allSymbols.map(s => s.name));
-        const libraryNames = new Set(getLibraryPackageNames());
+
+        // Cache allSymbolNames keyed on allSymbols array identity
+        // (getAllSymbols returns a cached array, only replaced on mutation).
+        let allSymbolNames: Set<string>;
+        if (this.symbolNamesCache && this.symbolNamesCache.symbols === allSymbols) {
+            allSymbolNames = this.symbolNamesCache.names;
+        } else {
+            allSymbolNames = new Set(allSymbols.map(s => s.name));
+            this.symbolNamesCache = { symbols: allSymbols, names: allSymbolNames };
+        }
+
+        // Library names never change after server init — cache permanently.
+        if (!this.libraryNamesCache) {
+            this.libraryNamesCache = new Set(getLibraryPackageNames());
+        }
+        const libraryNames = this.libraryNamesCache;
+
         const text = this.documentManager.getText(uri) ?? '';
         const indexes = this.getOrBuildIndexes(allSymbols);
 
@@ -1141,11 +1165,11 @@ export class SemanticValidator {
      * otherwise rebuild and cache.
      */
     private getOrBuildIndexes(allSymbols: SysMLSymbol[]): SymbolIndexes {
-        if (this.indexCache && this.indexCache.symbolCount === allSymbols.length) {
+        if (this.indexCache && this.indexCache.symbols === allSymbols) {
             return this.indexCache.indexes;
         }
         const indexes = this.buildSymbolIndexes(allSymbols);
-        this.indexCache = { symbolCount: allSymbols.length, indexes };
+        this.indexCache = { symbols: allSymbols, indexes };
         return indexes;
     }
 
@@ -1237,10 +1261,32 @@ export class SemanticValidator {
         return proseOnly && !hasExprSignal;
     }
 
+    /** Cached line-offset table for indexToRange — avoids O(n) text.slice().split() per call */
+    private lineOffsetCache?: { text: string; offsets: number[] };
+
     private indexToRange(text: string, start: number, length: number) {
-        const prefix = text.slice(0, start);
-        const startLine = prefix.split('\n').length - 1;
-        const startChar = start - (prefix.lastIndexOf('\n') + 1);
+        // Build or reuse line-offset table for this text
+        let offsets: number[];
+        if (this.lineOffsetCache && this.lineOffsetCache.text === text) {
+            offsets = this.lineOffsetCache.offsets;
+        } else {
+            offsets = [0];
+            for (let i = 0; i < text.length; i++) {
+                if (text[i] === '\n') offsets.push(i + 1);
+            }
+            this.lineOffsetCache = { text, offsets };
+        }
+
+        // Binary search for start line
+        let lo = 0;
+        let hi = offsets.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >>> 1;
+            if (offsets[mid] <= start) lo = mid;
+            else hi = mid - 1;
+        }
+        const startLine = lo;
+        const startChar = start - offsets[startLine];
         return {
             start: { line: startLine, character: startChar },
             end: { line: startLine, character: startChar + length },

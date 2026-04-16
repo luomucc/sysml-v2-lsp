@@ -1,7 +1,8 @@
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { Diagnostic } from 'vscode-languageserver/node.js';
-import { parseDocument, ParseResult } from './parser/parseDocument.js';
+import { parseDocument, parseDocumentBatch, ParseResult } from './parser/parseDocument.js';
 import { SymbolTable } from './symbols/symbolTable.js';
+import { stripComments } from './utils/identUtils.js';
 
 /**
  * Manages parsed documents — caches parse results by URI and content hash.
@@ -29,6 +30,30 @@ export class DocumentManager {
 
         const text = document.getText();
         const result = parseDocument(text);
+
+        this.cache.set(uri, {
+            version,
+            text,
+            result,
+            needsParse: false,
+        });
+
+        return result;
+    }
+
+    /**
+     * Parse a document using the batch-optimised path (reuses lexer/parser
+     * instances across calls).  Use this for workspace scanning where many
+     * files are parsed sequentially and the per-file constructor overhead
+     * matters.
+     */
+    parseBatch(uri: string, version: number, text: string): ParseResult {
+        const cached = this.cache.get(uri);
+        if (cached && cached.version === version && !cached.needsParse) {
+            return cached.result;
+        }
+
+        const result = parseDocumentBatch(text);
 
         this.cache.set(uri, {
             version,
@@ -103,6 +128,19 @@ export class DocumentManager {
      */
     getVersion(uri: string): number {
         return this.cache.get(uri)?.version ?? -1;
+    }
+
+    /**
+     * Get the text with comments stripped (cached per version).
+     * Avoids running the 2-pass regex on the same text multiple times.
+     */
+    getStrippedText(uri: string): string | undefined {
+        const cached = this.cache.get(uri);
+        if (!cached) return undefined;
+        if (cached.strippedText === undefined) {
+            cached.strippedText = stripComments(cached.text);
+        }
+        return cached.strippedText;
     }
 
     /**
@@ -216,4 +254,6 @@ interface CachedDocument {
     };
     /** When true, this entry was created via cacheTextOnly and needs parsing before symbol table access. */
     needsParse?: boolean;
+    /** Lazily computed comment-stripped text — invalidated on version change. */
+    strippedText?: string;
 }
