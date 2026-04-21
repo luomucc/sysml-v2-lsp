@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0]
+
+### Added
+
+- Complex SysML v2 example files: smart home, DFA coverage advanced, and multiplicity examples
+- Warm-up text expanded with directional ports (`in`, `out`, `inout`), nested action definitions, and prefix metadata annotations (`#Safety`, `#Security`)
+
+### Changed
+
+- Semantic validator: `require constraint` with documentation-only body no longer raises a false positive inside viewpoint definitions
+- DFA snapshot regenerated with updated warm-up coverage
+
 ## [0.15.0]
 
 ### Added
