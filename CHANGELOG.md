@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.17.0]
+
 ### Added
 
 - Clear error messages when SysML keywords are used as identifiers
