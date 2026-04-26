@@ -92,22 +92,40 @@ const PREFIX_EXTENSION_RULE_INDICES: ReadonlySet<number> = new Set([
     SysMLv2Parser.RULE_endFeaturePrefix,            // 86
 ]);
 
-/** Rules containing typing / specialization info for collectTypeNamesFromTree() */
-const TYPE_EXTRACTION_RULE_INDICES: ReadonlySet<number> = new Set([
+/** Rules that represent :> subsetting / specializes / subclassification */
+const TYPE_SPECIALIZATION_RULE_INDICES: ReadonlySet<number> = new Set([
     SysMLv2Parser.RULE_specialization,          // 66
     SysMLv2Parser.RULE_ownedSpecialization,      // 67
     SysMLv2Parser.RULE_subclassification,        // 83
     SysMLv2Parser.RULE_ownedSubclassification,   // 84
-    SysMLv2Parser.RULE_typings,                  // 101
-    SysMLv2Parser.RULE_featureTyping,            // 109
-    SysMLv2Parser.RULE_ownedFeatureTyping,       // 110
-    SysMLv2Parser.RULE_conjugation,              // 70
-    SysMLv2Parser.RULE_ownedConjugation,         // 71
-    SysMLv2Parser.RULE_disjoining,               // 72
-    SysMLv2Parser.RULE_ownedDisjoining,          // 73
     SysMLv2Parser.RULE_subsetting,               // 111
     SysMLv2Parser.RULE_ownedSubsetting,          // 112
     SysMLv2Parser.RULE_specializationPart,       // 57
+]);
+
+/**
+ * Rules that represent : typing (feature typing).
+ *
+ * NOTE: `conjugation` and `disjoining` (rules 70-73) are not strictly typing
+ * relationships in SysML semantics — they are kept in the typing bucket by
+ * exclusion (i.e. "everything name-bearing that is not a specialization")
+ * so that existing `extractTypeNames` / `typeNames` behaviour is preserved
+ * via the combined `TYPE_EXTRACTION_RULE_INDICES` set.
+ */
+const TYPE_TYPING_RULE_INDICES: ReadonlySet<number> = new Set([
+    SysMLv2Parser.RULE_typings,                  // 101
+    SysMLv2Parser.RULE_featureTyping,            // 109
+    SysMLv2Parser.RULE_ownedFeatureTyping,       // 110
+    SysMLv2Parser.RULE_conjugation,              // 70  (see NOTE above)
+    SysMLv2Parser.RULE_ownedConjugation,         // 71  (see NOTE above)
+    SysMLv2Parser.RULE_disjoining,               // 72  (see NOTE above)
+    SysMLv2Parser.RULE_ownedDisjoining,          // 73  (see NOTE above)
+]);
+
+/** Combined set — all rules containing typing / specialization info */
+const TYPE_EXTRACTION_RULE_INDICES: ReadonlySet<number> = new Set([
+    ...TYPE_SPECIALIZATION_RULE_INDICES,
+    ...TYPE_TYPING_RULE_INDICES,
 ]);
 
 /** Rules to recurse into when looking for type names */
@@ -153,7 +171,14 @@ const PREFIX_METADATA_RECURSE_RULE_INDICES: ReadonlySet<number> = new Set([
 // Negative lookbehind (?<![A-Za-z_]) ensures keywords don't match mid-identifier
 // (e.g. "connect" should not match inside "InterconnectionView")
 const RE_KEYWORD_TRUNCATE = /(?<![A-Za-z_])(redefines|subsets|references|connect|bind|first|then|flow|allocate|assign|accept|send|decide|merge|join|fork|via|default)\b.*/i;
+// Variant used by the specialization regex fallback: keeps `subsets` so that
+// it can be matched as a specialization keyword (it is otherwise stripped by
+// RE_KEYWORD_TRUNCATE because the typing regex must not greedily absorb it).
+const RE_KEYWORD_TRUNCATE_SPEC = /(?<![A-Za-z_])(redefines|references|connect|bind|first|then|flow|allocate|assign|accept|send|decide|merge|join|fork|via|default)\b.*/i;
 const RE_SPEC = /(?:specializes|:>|:>>)\s*('[^']+'|[A-Za-z_]\w*(?:::\w+)*)(?:\s*,\s*(?:'[^']+'|[A-Za-z_]\w*(?:::\w+)*))*/;
+// Specialization fallback regex extended to cover the `subsets` keyword used
+// by feature subsetting relationships.
+const RE_SPEC_WITH_SUBSETS = /(?:specializes|subsets|:>|:>>)\s*('[^']+'|[A-Za-z_]\w*(?:::\w+)*)(?:\s*,\s*(?:'[^']+'|[A-Za-z_]\w*(?:::\w+)*))*/;
 const RE_DEFINED_BY = /definedby\s*([A-Za-z_]\w*(?:::\w+)*(?:\s*,\s*[A-Za-z_]\w*(?:::\w+)*)*)/;
 const RE_TYPING = /:(?![:>])\s*('[^']+'|[A-Za-z_]\w*(?:::\w+)*)/;
 const RE_QUOTED_NAME = /'([^']+)'/;
@@ -579,6 +604,7 @@ export class SymbolTable {
             uri,
             typeName: typeNames[0],
             typeNames,
+            specializationNames: [],
             parentQualifiedName: parentQualifiedName || undefined,
             children: [],
         };
@@ -669,6 +695,7 @@ export class SymbolTable {
         const selectionRange = this.extractNameRange(ctx) ?? range;
         // Extract type names for both usages (typing) and definitions (specialization)
         const typeNames = this.extractTypeNames(ctx);
+        const specializationNames = this.extractSpecializationNames(ctx);
         const typeName = typeNames[0];
         const documentation = this.extractDocumentation(ctx);
         // Only extract multiplicity for usages
@@ -691,6 +718,7 @@ export class SymbolTable {
             uri,
             typeName,
             typeNames,
+            specializationNames,
             documentation,
             parentQualifiedName: parentQualifiedName || undefined,
             children: [],
@@ -857,6 +885,38 @@ export class SymbolTable {
     }
 
     /**
+     * Extract only the specialization names (:> / specializes / subsets) from a context.
+     * Uses the same tree-walk as extractTypeNames but restricted to
+     * TYPE_SPECIALIZATION_RULE_INDICES so that : typing names are excluded.
+     * Falls back to a regex path that covers :> / :>> / specializes / subsets.
+     */
+    private extractSpecializationNames(ctx: ParserRuleContext): string[] {
+        const names: string[] = [];
+        this.collectNamesFromTree(ctx, names, 0, TYPE_SPECIALIZATION_RULE_INDICES);
+        if (names.length > 0) return names;
+
+        // Regex fallback: look for :> / specializes / :>> / subsets.
+        // Use the spec-aware truncate variant so that `subsets <name>` is not
+        // stripped before we have a chance to match it.
+        const fullText = ctx.getText();
+        const braceIdx = fullText.indexOf('{');
+        let text = braceIdx >= 0 ? fullText.substring(0, braceIdx) : fullText;
+        text = text.replace(RE_KEYWORD_TRUNCATE_SPEC, '');
+
+        const specMatch = text.match(RE_SPEC_WITH_SUBSETS);
+        if (specMatch) {
+            const specStr = text.substring(text.indexOf(specMatch[0]) + specMatch[0].indexOf(specMatch[1]));
+            for (const part of specStr.split(',')) {
+                const qm = part.match(RE_QUOTED_NAME);
+                if (qm) { names.push(qm[1]); continue; }
+                const m = part.trim().match(RE_IDENT_START);
+                if (m) names.push(m[1]);
+            }
+        }
+        return names;
+    }
+
+    /**
      * Recursively walk the parse tree to find typing / specialization rules.
      * Recurses into declaration wrappers (up to maxDepth) so that
      * `interfaceUsage → interfaceUsageDeclaration → usageDeclaration →
@@ -867,12 +927,25 @@ export class SymbolTable {
         names: string[],
         depth: number,
     ): void {
+        this.collectNamesFromTree(ctx, names, depth, TYPE_EXTRACTION_RULE_INDICES);
+    }
+
+    /**
+     * Core recursive tree walker used by both collectTypeNamesFromTree and
+     * extractSpecializationNames — parameterised on which extraction rule set to use.
+     */
+    private collectNamesFromTree(
+        ctx: ParserRuleContext,
+        names: string[],
+        depth: number,
+        extractionRules: ReadonlySet<number>,
+    ): void {
         if (depth > 6) return; // don't go too deep
         for (let i = 0; i < ctx.getChildCount(); i++) {
             const child = ctx.getChild(i);
             if (!(child instanceof ParserRuleContext)) continue;
             const ri = child.ruleIndex;
-            if (TYPE_EXTRACTION_RULE_INDICES.has(ri)) {
+            if (extractionRules.has(ri)) {
                 // These rules contain qualified-name children;
                 // extract all identifier-like tokens.
                 const childText = child.getText();
@@ -899,7 +972,7 @@ export class SymbolTable {
                 // (covers e.g. interfaceUsageDeclaration, usageDeclaration, etc.)
                 SysMLv2Parser.ruleNames[ri]?.includes('eclaration')
             ) {
-                this.collectTypeNamesFromTree(child, names, depth + 1);
+                this.collectNamesFromTree(child, names, depth + 1, extractionRules);
             }
         }
     }
