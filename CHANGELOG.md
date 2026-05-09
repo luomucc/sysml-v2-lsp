@@ -5,6 +5,12 @@
 ### Added
 
 - `specializationNames` field on `SysMLSymbol` to explicitly track names referenced via specialization relationships (`:>`, `:>>`, `specializes`, `subsets`, `subclassification`), distinct from feature typing
+
+### Security
+
+- Updated `fast-uri` to 3.1.2 — fixes path traversal via percent-encoded dot segments (GHSA-q3j6-qgpj-74h6) and host confusion via percent-encoded authority delimiters (GHSA-v39h-62p7-jpjc)
+- Updated `hono` to 4.12.18 — fixes cache middleware cross-user leakage (GHSA-p77w-8qqv-26rm), CSS declaration injection in JSX SSR (GHSA-qp7p-654g-cw7p), JWT NumericDate claim bypass (GHSA-hm8q-7f3q-5f36), bodyLimit bypass for chunked requests (GHSA-9vqf-7f2p-gf9v), and unvalidated JSX tag names (GHSA-69xw-7hcm-h432)
+- Updated `ip-address` to 10.2.0 and `express-rate-limit` to 8.5.1 — fixes XSS in Address6 HTML-emitting methods (GHSA-v2v4-37r5-5v8g)
 - `specializes` key in `formatSymbol` MCP output, surfacing specialization names separately from `type`
 - Regex fallback in specialization extraction now covers the `subsets` keyword (previously only `specializes`, `:>`, `:>>` were matched)
 
