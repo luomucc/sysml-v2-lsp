@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.18.0]
+
 ### Added
 
 - `specializationNames` field on `SysMLSymbol` to explicitly track names referenced via specialization relationships (`:>`, `:>>`, `specializes`, `subsets`, `subclassification`), distinct from feature typing
