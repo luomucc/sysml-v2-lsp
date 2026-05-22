@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.19.0]
+
 ### Changed
 
 - Bumped dev dependencies: `@types/node` 25.6.2 → 25.7.0, `vite` 8.0.11 → 8.0.12, `vitest` 4.1.5 → 4.1.6 ([#43](https://github.com/daltskin/sysml-v2-lsp/pull/43))
