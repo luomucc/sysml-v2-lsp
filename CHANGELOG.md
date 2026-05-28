@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.20.0]
+
 ### Added
 
 - Sequence diagram extraction now parses `flow` and `message` statements inside part/item/interface containers, synthesising lifelines from the container's parts/items and arrows from the statement endpoints ([#44](https://github.com/daltskin/sysml-v2-lsp/issues/44))
