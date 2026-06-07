@@ -64,7 +64,7 @@ const clientBuild = esbuild.build({
 // vscode.dev web extension host, where there is no Node.js runtime or
 // filesystem. Node built-ins are swapped for lightweight shims, the
 // transport/library platform modules for their `.browser.ts` variants, and
-// `vscode-languageserver/node.js` for the browser entry point.
+// `vscode-languageserver/node` for the browser entry point.
 // ---------------------------------------------------------------------------
 
 /** Swap `./platform/<connection|libraryFiles>.js` for their `.browser.ts` variants. */
@@ -95,9 +95,12 @@ const browserServerBuild = esbuild.build({
         // The server reads __dirname only to locate the on-disk library,
         // which is bundled in the browser build, so the value is unused.
         '__dirname': '"/"',
+        // Flag the browser build so the server skips spawning a parse worker
+        // (worker_threads is unavailable in the browser; parsing runs inline).
+        '__SYSML_BROWSER_SERVER__': 'true',
     },
     alias: {
-        'vscode-languageserver/node.js': 'vscode-languageserver/browser',
+        'vscode-languageserver/node': 'vscode-languageserver/browser',
         'node:fs': shim('fs.ts'),
         'node:fs/promises': shim('fs-promises.ts'),
         'node:path': shim('path.ts'),
