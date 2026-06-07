@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.22.0]
+
 ### Fixed
 
 - Browser build no longer attempts to spawn a `worker_threads` parse worker (unavailable in the Web Worker runtime); parsing now runs inline, guarded by a new `__SYSML_BROWSER_SERVER__` compile-time flag injected via esbuild's `define`, avoiding a misleading worker-failure log
