@@ -74,20 +74,8 @@ jobs:
         run: |
           mkdir -p bundle_content
           
-          # 复制源代码（包含 .git 文件夹）
-          # 使用 find 排除不需要的文件，然后 tar 打包
-          cd bundle_content
-          cd ..
-          
-          # 创建临时目录用于复制源代码
-          mkdir -p temp_source
-          
-          # 使用 tar 进行选择性复制（包含 .git）
-          tar --exclude='dist' \
-              --exclude='.github/workflows/offline-bundle.yml' \
-              -cf - . | tar -xf - -C temp_source/
-          
-          mv temp_source bundle_content/source
+          # 复制完整的源代码（包含所有文件，包括 .git 和 dist）
+          cp -r . bundle_content/source
           
           # 复制 node_modules
           if [ -d "node_modules" ]; then
@@ -136,11 +124,9 @@ jobs:
           mkdir -p bundle_content/platform-dependencies/linux
           
           # 下载 Windows 依赖（示例：可根据实际需要调整）
-          # 如果项目有特定的 Windows 依赖，在这里下载
           echo "Windows dependencies folder prepared" > bundle_content/platform-dependencies/windows/README.md
           
           # 下载 Linux 依赖（示例：可根据实际需要调整）
-          # 如果项目有特定的 Linux 依赖，在这里下载
           echo "Linux dependencies folder prepared" > bundle_content/platform-dependencies/linux/README.md
           
           echo "platform_dependencies_prepared=true" >> $GITHUB_OUTPUT
@@ -149,24 +135,29 @@ jobs:
         id: checksums
         run: |
           cd bundle_content
-          find . -type f ! -path './.git/*' -exec sha256sum {} \; > SHA256SUMS
+          find . -type f -exec sha256sum {} \; > SHA256SUMS
           cat SHA256SUMS
           cd ..
 
-      - name: Create unified bundle
+      - name: Create unified ZIP bundle
         id: bundle
         run: |
-          mkdir -p dist
+          mkdir -p dist_bundle
           
-          # 创建单个压缩包，包含所有内容
-          tar -czf dist/offline-bundle-${{ steps.version.outputs.version }}.tar.gz bundle_content/
+          # 安装 zip 工具（通常已预装）
+          which zip || apt-get update && apt-get install -y zip
+          
+          # 创建单个 ZIP 压缩包，包含所有内容
+          cd bundle_content
+          zip -r ../dist_bundle/offline-bundle-${{ steps.version.outputs.version }}.zip .
+          cd ..
           
           # 计算 SHA256
-          SHA256=$(sha256sum dist/offline-bundle-${{ steps.version.outputs.version }}.tar.gz | cut -d' ' -f1)
+          SHA256=$(sha256sum dist_bundle/offline-bundle-${{ steps.version.outputs.version }}.zip | cut -d' ' -f1)
           echo "bundle_sha256=$SHA256" >> $GITHUB_OUTPUT
           
           # 计算大小
-          SIZE=$(du -h dist/offline-bundle-${{ steps.version.outputs.version }}.tar.gz | cut -f1)
+          SIZE=$(du -h dist_bundle/offline-bundle-${{ steps.version.outputs.version }}.zip | cut -f1)
           echo "bundle_size=$SIZE" >> $GITHUB_OUTPUT
           
           # 计算包含的内容大小
@@ -178,8 +169,8 @@ jobs:
 
       - name: Generate checksums file for release
         run: |
-          cd dist
-          sha256sum offline-bundle-${{ steps.version.outputs.version }}.tar.gz > SHA256SUMS
+          cd dist_bundle
+          sha256sum offline-bundle-${{ steps.version.outputs.version }}.zip > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create Release
@@ -198,18 +189,20 @@ jobs:
             ## 📦 Complete Offline Bundle
             
             ### Archive Information
-            - **File**: `offline-bundle-${{ steps.version.outputs.version }}.tar.gz`
+            - **File**: `offline-bundle-${{ steps.version.outputs.version }}.zip`
             - **Compressed Size**: ${{ steps.bundle.outputs.bundle_size }}
             - **Uncompressed Size**: ${{ steps.bundle.outputs.total_size }}
             - **SHA256**: `${{ steps.bundle.outputs.bundle_sha256 }}`
             
             ## 📋 Contents Included
             
-            This single archive contains everything needed for offline installation:
+            This single ZIP archive contains everything needed for offline installation:
             
             ✅ **Source Code** (`source/`)
             - Complete project source code
             - Full `.git` history and metadata
+            - All configuration files and scripts
+            - Pre-built artifacts (`dist/`)
             - Size: ${{ steps.bundle.outputs.source_size }}
             
             ✅ **Node Modules** (`node_modules/`)
@@ -238,7 +231,7 @@ jobs:
             
             ```bash
             # Extract the archive
-            tar -xzf offline-bundle-${{ steps.version.outputs.version }}.tar.gz
+            unzip offline-bundle-${{ steps.version.outputs.version }}.zip
             
             # Verify checksums
             cd bundle_content
@@ -247,9 +240,24 @@ jobs:
             
             ## 📥 Quick Start
             
+            ### On Windows
+            ```powershell
+            # 1. Extract the ZIP file using Windows Explorer or 7-Zip
+            
+            # 2. Navigate to the source folder
+            cd bundle_content\source
+            
+            # 3. Copy node_modules from parent directory
+            xcopy ..\node_modules . /E /I
+            
+            # 4. Ready to use!
+            npm run build
+            ```
+            
+            ### On Linux/macOS
             ```bash
-            # 1. Extract the bundle
-            tar -xzf offline-bundle-${{ steps.version.outputs.version }}.tar.gz
+            # 1. Extract the archive
+            unzip offline-bundle-${{ steps.version.outputs.version }}.zip
             cd bundle_content
             
             # 2. Navigate to source
@@ -270,16 +278,18 @@ jobs:
             
             - **Windows**: See `platform-dependencies/windows/`
             - **Linux**: See `platform-dependencies/linux/`
+            - **Node.js**: >= 20
+            - **npm**: >= 9
             
             ---
             
             **Generated by**: GitHub Actions
             **Workflow**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           artifacts: |
-            dist/offline-bundle-${{ steps.version.outputs.version }}.tar.gz
-            dist/SHA256SUMS
+            dist_bundle/offline-bundle-${{ steps.version.outputs.version }}.zip
+            dist_bundle/SHA256SUMS
 
       - name: Cleanup
         if: always()
         run: |
-          rm -rf dist bundle_content temp_source
+          rm -rf dist_bundle bundle_content
