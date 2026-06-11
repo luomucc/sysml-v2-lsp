@@ -1,0 +1,204 @@
+name: Offline Bundle & Auto-Sync
+
+on:
+  schedule:
+    # 每天早上 8:00 UTC 检查上游更新
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  check-and-bundle:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      has-update: ${{ steps.sync.outputs.has-update }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Check upstream updates
+        id: sync
+        run: |
+          # 获取当前 commit hash
+          CURRENT_HASH=$(git rev-parse HEAD)
+          echo "current_hash=$CURRENT_HASH" >> $GITHUB_OUTPUT
+          
+          # 检查是否有新的 commit（通过日期判断）
+          if [ -z "${{ github.event.schedule }}" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "has-update=false" >> $GITHUB_OUTPUT
+          else
+            echo "has-update=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(node -pe "require('./package.json').version")
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          BUNDLE_VERSION="${VERSION}-${TIMESTAMP}"
+          echo "version=$BUNDLE_VERSION" >> $GITHUB_OUTPUT
+          echo "version_short=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Scan and download dependencies
+        id: scan
+        run: |
+          node .github/scripts/scan-dependencies.js
+          echo "scan_completed=true" >> $GITHUB_OUTPUT
+
+      - name: Generate offline configuration
+        id: config
+        run: |
+          node .github/scripts/generate-offline-config.js "${{ steps.version.outputs.version }}"
+
+      - name: Create source bundle
+        id: bundle
+        run: |
+          mkdir -p dist
+          tar --exclude='.git' \
+              --exclude='node_modules' \
+              --exclude='.github' \
+              --exclude='dist' \
+              --exclude='.DS_Store' \
+              -czf dist/source-${{ steps.version.outputs.version }}.tar.gz .
+          
+          # 计算 SHA256
+          SHA256=$(sha256sum dist/source-${{ steps.version.outputs.version }}.tar.gz | cut -d' ' -f1)
+          echo "source_sha256=$SHA256" >> $GITHUB_OUTPUT
+          
+          # 计算大小
+          SIZE=$(du -h dist/source-${{ steps.version.outputs.version }}.tar.gz | cut -f1)
+          echo "source_size=$SIZE" >> $GITHUB_OUTPUT
+
+      - name: Create dependencies bundle
+        id: deps-bundle
+        run: |
+          # 创建依赖包
+          if [ -d "offline_dependencies" ]; then
+            tar -czf dist/dependencies-${{ steps.version.outputs.version }}.tar.gz offline_dependencies/
+            
+            SHA256=$(sha256sum dist/dependencies-${{ steps.version.outputs.version }}.tar.gz | cut -d' ' -f1)
+            echo "deps_sha256=$SHA256" >> $GITHUB_OUTPUT
+            
+            SIZE=$(du -h dist/dependencies-${{ steps.version.outputs.version }}.tar.gz | cut -f1)
+            echo "deps_size=$SIZE" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create npm-cache bundle
+        id: npm-bundle
+        run: |
+          # 打包 npm cache
+          if [ -d ".npm-cache" ]; then
+            tar -czf dist/npm-cache-${{ steps.version.outputs.version }}.tar.gz .npm-cache/
+            
+            SHA256=$(sha256sum dist/npm-cache-${{ steps.version.outputs.version }}.tar.gz | cut -d' ' -f1)
+            echo "npm_sha256=$SHA256" >> $GITHUB_OUTPUT
+            
+            SIZE=$(du -h dist/npm-cache-${{ steps.version.outputs.version }}.tar.gz | cut -f1)
+            echo "npm_size=$SIZE" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: offline-bundle-${{ steps.version.outputs.version }}
+          name: Offline Bundle ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: false
+          body: |
+            # Offline Bundle Release
+            
+            **Version**: ${{ steps.version.outputs.version }}
+            **Build Time**: ${{ github.event.head_commit.timestamp || github.server_url }}
+            
+            ## 📦 Contents
+            
+            ### Source Code
+            - **File**: `source-${{ steps.version.outputs.version }}.tar.gz`
+            - **Size**: ${{ steps.bundle.outputs.source_size }}
+            - **SHA256**: `${{ steps.bundle.outputs.source_sha256 }}`
+            
+            ### Dependencies (if available)
+            - **File**: `dependencies-${{ steps.version.outputs.version }}.tar.gz`
+            - **Size**: ${{ steps.deps-bundle.outputs.deps_size }}
+            - **SHA256**: `${{ steps.deps-bundle.outputs.deps_sha256 }}`
+            
+            ### NPM Cache (if available)
+            - **File**: `npm-cache-${{ steps.version.outputs.version }}.tar.gz`
+            - **Size**: ${{ steps.npm-bundle.outputs.npm_size }}
+            - **SHA256**: `${{ steps.npm-bundle.outputs.npm_sha256 }}`
+            
+            ## 🔐 Verify Integrity
+            
+            ```bash
+            sha256sum -c SHA256SUMS
+            ```
+            
+            ## 📋 Installation Guide
+            
+            See `OFFLINE_INSTALL.md` in this release for detailed offline installation instructions.
+            
+            ## 🔧 Offline Configuration
+            
+            - `.npmrc` configuration file included
+            - Verdaccio setup guide included
+            - Complete dependency list in `DEPENDENCIES.json`
+            
+            ---
+            
+            **Generated by**: GitHub Actions
+            **Workflow**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          artifacts: |
+            dist/source-${{ steps.version.outputs.version }}.tar.gz
+            dist/dependencies-${{ steps.version.outputs.version }}.tar.gz
+            dist/npm-cache-${{ steps.version.outputs.version }}.tar.gz
+            dist/SHA256SUMS
+            offline_npmrc
+            OFFLINE_INSTALL.md
+            DEPENDENCIES.json
+
+      - name: Upload to Release Assets
+        run: |
+          # 上传配置文件到 Release
+          if [ -f "offline_npmrc" ]; then
+            gh release upload offline-bundle-${{ steps.version.outputs.version }} offline_npmrc --clobber
+          fi
+          
+          if [ -f "OFFLINE_INSTALL.md" ]; then
+            gh release upload offline-bundle-${{ steps.version.outputs.version }} OFFLINE_INSTALL.md --clobber
+          fi
+          
+          if [ -f "DEPENDENCIES.json" ]; then
+            gh release upload offline-bundle-${{ steps.version.outputs.version }} DEPENDENCIES.json --clobber
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf dist offline_dependencies .npm-cache
