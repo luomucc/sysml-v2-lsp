@@ -75,7 +75,19 @@ jobs:
           mkdir -p bundle_content
           
           # 复制源代码（包含 .git 文件夹）
-          cp -r . bundle_content/source --exclude=dist --exclude=.github/workflows/offline-bundle.yml
+          # 使用 find 排除不需要的文件，然后 tar 打包
+          cd bundle_content
+          cd ..
+          
+          # 创建临时目录用于复制源代码
+          mkdir -p temp_source
+          
+          # 使用 tar 进行选择性复制（包含 .git）
+          tar --exclude='dist' \
+              --exclude='.github/workflows/offline-bundle.yml' \
+              -cf - . | tar -xf - -C temp_source/
+          
+          mv temp_source bundle_content/source
           
           # 复制 node_modules
           if [ -d "node_modules" ]; then
@@ -270,4 +282,4 @@ jobs:
       - name: Cleanup
         if: always()
         run: |
-          rm -rf dist bundle_content
+          rm -rf dist bundle_content temp_source
