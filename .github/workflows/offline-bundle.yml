@@ -88,6 +88,24 @@ jobs:
           SIZE=$(du -h dist/source-${{ steps.version.outputs.version }}.tar.gz | cut -f1)
           echo "source_size=$SIZE" >> $GITHUB_OUTPUT
 
+      - name: Create node_modules bundle
+        id: node-modules-bundle
+        run: |
+          # 打包 node_modules（外网编译时自动生成的依赖文件夹）
+          if [ -d "node_modules" ]; then
+            tar -czf dist/node_modules-${{ steps.version.outputs.version }}.tar.gz node_modules/
+            
+            SHA256=$(sha256sum dist/node_modules-${{ steps.version.outputs.version }}.tar.gz | cut -d' ' -f1)
+            echo "node_modules_sha256=$SHA256" >> $GITHUB_OUTPUT
+            
+            SIZE=$(du -h dist/node_modules-${{ steps.version.outputs.version }}.tar.gz | cut -f1)
+            echo "node_modules_size=$SIZE" >> $GITHUB_OUTPUT
+            
+            echo "node_modules_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "node_modules_exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create dependencies bundle
         id: deps-bundle
         run: |
@@ -142,6 +160,12 @@ jobs:
             - **Size**: ${{ steps.bundle.outputs.source_size }}
             - **SHA256**: `${{ steps.bundle.outputs.source_sha256 }}`
             
+            ### Node Modules (if available)
+            - **File**: `node_modules-${{ steps.version.outputs.version }}.tar.gz`
+            - **Size**: ${{ steps.node-modules-bundle.outputs.node_modules_size }}
+            - **SHA256**: `${{ steps.node-modules-bundle.outputs.node_modules_sha256 }}`
+            - **Description**: Pre-compiled dependencies for offline installation
+            
             ### Dependencies (if available)
             - **File**: `dependencies-${{ steps.version.outputs.version }}.tar.gz`
             - **Size**: ${{ steps.deps-bundle.outputs.deps_size }}
@@ -167,6 +191,7 @@ jobs:
             - `.npmrc` configuration file included
             - Verdaccio setup guide included
             - Complete dependency list in `DEPENDENCIES.json`
+            - Pre-compiled `node_modules` for faster offline setup
             
             ---
             
@@ -174,6 +199,7 @@ jobs:
             **Workflow**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           artifacts: |
             dist/source-${{ steps.version.outputs.version }}.tar.gz
+            dist/node_modules-${{ steps.version.outputs.version }}.tar.gz
             dist/dependencies-${{ steps.version.outputs.version }}.tar.gz
             dist/npm-cache-${{ steps.version.outputs.version }}.tar.gz
             dist/SHA256SUMS
